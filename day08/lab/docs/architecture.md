@@ -124,10 +124,10 @@ Answer: Nhân viên phải báo trước ít nhất 3 ngày làm việc để xi
 
 ```mermaid
 graph TD
-    classDef database fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef process fill:#bbf,stroke:#333,stroke-width:1px;
-    classDef input fill:#cfc,stroke:#333,stroke-width:1px;
-    classDef llm fill:#fca,stroke:#333,stroke-width:2px;
+    classDef database fill:#f9f,stroke:#333,stroke-width:2px,color:#000;
+    classDef process fill:#bbf,stroke:#333,stroke-width:1px,color:#000;
+    classDef input fill:#cfc,stroke:#333,stroke-width:1px,color:#000;
+    classDef llm fill:#fca,stroke:#333,stroke-width:2px,color:#000;
 
     subgraph "Phase 1: Indexing Pipeline (Sprint 1)"
         R1[Raw Documents <br> PDF, Markdown]:::input --> CH[Document Loader & Chunking <br> Size: 400, Overlap: 80]:::process
