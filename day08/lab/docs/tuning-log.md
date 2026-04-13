@@ -16,16 +16,16 @@ overlap = 80 tokens
 top_k_search = 10
 top_k_select = 3
 use_rerank = False
-llm_model = Deepseek Chat
+llm_model = Deepseek-chat
 ```
 
 **Scorecard Baseline:**
 | Metric | Average Score |
 |--------|--------------|
-| Faithfulness | ? /5 |
-| Answer Relevance | ? /5 |
-| Context Recall | ? /5 |
-| Completeness | ? /5 |
+| Faithfulness | 4/5 |
+| Answer Relevance | 5/5 |
+| Context Recall | 5/5 |
+| Completeness | 4.6/5 |
 
 **Câu hỏi yếu nhất (điểm thấp):**
 > TODO: Liệt kê 2-3 câu hỏi có điểm thấp nhất và lý do tại sao.
@@ -57,10 +57,10 @@ retrieval_mode = "hybrid"
 **Scorecard Variant 1:**
 | Metric | Baseline | Variant 1 | Delta |
 |--------|----------|-----------|-------|
-| Faithfulness | ?/5 | ?/5 | +/- |
-| Answer Relevance | ?/5 | ?/5 | +/- |
-| Context Recall | ?/5 | ?/5 | +/- |
-| Completeness | ?/5 | ?/5 | +/- |
+| Faithfulness | 4/5 | 4.2/5 | +0.2 |
+| Answer Relevance | 5/5 | 4.8/5 | -0.2 |
+| Context Recall | 5/5 | 5/5 | +0 |
+| Completeness | 4.6/5 | 4.5/5 | -0.1 |
 
 **Nhận xét:**
 > TODO: Variant 1 cải thiện ở câu nào? Tại sao?
