@@ -22,6 +22,10 @@ import csv
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
 from rag_answer import rag_answer
 
 # =============================================================================
@@ -54,7 +58,50 @@ VARIANT_CONFIG = {
 # =============================================================================
 # SCORING FUNCTIONS
 # 4 metrics từ slide: Faithfulness, Answer Relevance, Context Recall, Completeness
+# Sử dụng LLM-as-Judge (Gemini) để tự động chấm điểm
 # =============================================================================
+
+def _llm_judge(prompt: str) -> Dict[str, Any]:
+    """
+    Helper: Gọi Gemini làm judge, parse kết quả JSON.
+    Trả về dict với score và reason/notes.
+    """
+    import os
+    import json
+    import time
+    from google import genai
+    from google.genai import types
+
+    try:
+        client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+        # Retry cho rate limit
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0,
+                        max_output_tokens=256,
+                    ),
+                )
+                text = response.text.strip()
+                # Tìm JSON trong response
+                if "{" in text:
+                    json_str = text[text.index("{"):text.rindex("}") + 1]
+                    return json.loads(json_str)
+                break
+            except Exception as e:
+                if "429" in str(e) and attempt < 2:
+                    time.sleep(10 * (attempt + 1))
+                else:
+                    raise
+    except Exception as e:
+        return {"score": None, "reason": f"LLM Judge error: {e}"}
+
+    return {"score": None, "reason": "Could not parse LLM response"}
 
 def score_faithfulness(
     answer: str,
@@ -62,37 +109,35 @@ def score_faithfulness(
 ) -> Dict[str, Any]:
     """
     Faithfulness: Câu trả lời có bám đúng chứng cứ đã retrieve không?
-    Câu hỏi: Model có tự bịa thêm thông tin ngoài retrieved context không?
-
-    Thang điểm 1-5:
-      5: Mọi thông tin trong answer đều có trong retrieved chunks
-      4: Gần như hoàn toàn grounded, 1 chi tiết nhỏ chưa chắc chắn
-      3: Phần lớn grounded, một số thông tin có thể từ model knowledge
-      2: Nhiều thông tin không có trong retrieved chunks
-      1: Câu trả lời không grounded, phần lớn là model bịa
-
-    TODO Sprint 4 — Có 2 cách chấm:
-
-    Cách 1 — Chấm thủ công (Manual, đơn giản):
-        Đọc answer và chunks_used, chấm điểm theo thang trên.
-        Ghi lý do ngắn gọn vào "notes".
-
-    Cách 2 — LLM-as-Judge (Tự động, nâng cao):
-        Gửi prompt cho LLM:
-            "Given these retrieved chunks: {chunks}
-             And this answer: {answer}
-             Rate the faithfulness on a scale of 1-5.
-             5 = completely grounded in the provided context.
-             1 = answer contains information not in the context.
-             Output JSON: {'score': <int>, 'reason': '<string>'}"
-
-    Trả về dict với: score (1-5) và notes (lý do)
+    LLM-as-Judge: Gemini chấm điểm 1-5.
     """
-    # TODO Sprint 4: Implement scoring
-    # Tạm thời trả về None (yêu cầu chấm thủ công)
+    if answer in ("PIPELINE_NOT_IMPLEMENTED", "") or not chunks_used:
+        return {"score": None, "notes": "Pipeline not implemented or no chunks"}
+
+    context_text = "\n\n".join([c.get("text", "")[:500] for c in chunks_used[:3]])
+
+    prompt = f"""You are an evaluation judge. Rate the FAITHFULNESS of an answer.
+Faithfulness = Does the answer ONLY use information from the retrieved context? No fabrication?
+
+Scoring:
+  5: Every claim in the answer is supported by the context
+  4: Almost fully grounded, 1 minor uncertain detail
+  3: Mostly grounded, some info may come from model knowledge
+  2: Many claims not in the context
+  1: Answer is mostly fabricated
+
+Retrieved Context:
+{context_text}
+
+Answer:
+{answer}
+
+Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+
+    result = _llm_judge(prompt)
     return {
-        "score": None,
-        "notes": "TODO: Chấm thủ công hoặc implement LLM-as-Judge",
+        "score": result.get("score"),
+        "notes": result.get("reason", ""),
     }
 
 
@@ -102,20 +147,30 @@ def score_answer_relevance(
 ) -> Dict[str, Any]:
     """
     Answer Relevance: Answer có trả lời đúng câu hỏi người dùng hỏi không?
-    Câu hỏi: Model có bị lạc đề hay trả lời đúng vấn đề cốt lõi không?
-
-    Thang điểm 1-5:
-      5: Answer trả lời trực tiếp và đầy đủ câu hỏi
-      4: Trả lời đúng nhưng thiếu vài chi tiết phụ
-      3: Trả lời có liên quan nhưng chưa đúng trọng tâm
-      2: Trả lời lạc đề một phần
-      1: Không trả lời câu hỏi
-
-    TODO Sprint 4: Implement tương tự score_faithfulness
+    LLM-as-Judge: Gemini chấm điểm 1-5.
     """
+    if answer in ("PIPELINE_NOT_IMPLEMENTED", ""):
+        return {"score": None, "notes": "Pipeline not implemented"}
+
+    prompt = f"""You are an evaluation judge. Rate the ANSWER RELEVANCE.
+Relevance = Does the answer directly address the user's question?
+
+Scoring:
+  5: Answer directly and fully addresses the question
+  4: Answers correctly but missing minor details
+  3: Related but not on target
+  2: Partially off-topic
+  1: Does not answer the question at all
+
+Question: {query}
+Answer: {answer}
+
+Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+
+    result = _llm_judge(prompt)
     return {
-        "score": None,
-        "notes": "TODO: Implement score_answer_relevance",
+        "score": result.get("score"),
+        "notes": result.get("reason", ""),
     }
 
 
@@ -181,26 +236,35 @@ def score_completeness(
     expected_answer: str,
 ) -> Dict[str, Any]:
     """
-    Completeness: Answer có thiếu điều kiện ngoại lệ hoặc bước quan trọng không?
-    Câu hỏi: Answer có bao phủ đủ thông tin so với expected_answer không?
-
-    Thang điểm 1-5:
-      5: Answer bao gồm đủ tất cả điểm quan trọng trong expected_answer
-      4: Thiếu 1 chi tiết nhỏ
-      3: Thiếu một số thông tin quan trọng
-      2: Thiếu nhiều thông tin quan trọng
-      1: Thiếu phần lớn nội dung cốt lõi
-
-    TODO Sprint 4:
-    Option 1 — Chấm thủ công: So sánh answer vs expected_answer và chấm.
-    Option 2 — LLM-as-Judge:
-        "Compare the model answer with the expected answer.
-         Rate completeness 1-5. Are all key points covered?
-         Output: {'score': int, 'missing_points': [str]}"
+    Completeness: Answer có bao phủ đủ thông tin so với expected_answer không?
+    LLM-as-Judge: Gemini so sánh với expected answer.
     """
+    if answer in ("PIPELINE_NOT_IMPLEMENTED", ""):
+        return {"score": None, "notes": "Pipeline not implemented"}
+
+    if not expected_answer:
+        return {"score": None, "notes": "No expected answer to compare"}
+
+    prompt = f"""You are an evaluation judge. Rate the COMPLETENESS of an answer.
+Completeness = Does the answer cover all key points from the expected answer?
+
+Scoring:
+  5: All key points from expected answer are covered
+  4: Missing 1 minor detail
+  3: Missing some important information
+  2: Missing many important points
+  1: Missing most core content
+
+Question: {query}
+Model Answer: {answer}
+Expected Answer: {expected_answer}
+
+Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+
+    result = _llm_judge(prompt)
     return {
-        "score": None,
-        "notes": "TODO: Implement score_completeness (so sánh với expected_answer)",
+        "score": result.get("score"),
+        "notes": result.get("reason", ""),
     }
 
 
@@ -487,24 +551,22 @@ if __name__ == "__main__":
         baseline_results = []
 
     # --- Chạy Variant (sau khi Sprint 3 hoàn thành) ---
-    # TODO Sprint 4: Uncomment sau khi implement variant trong rag_answer.py
-    # print("\n--- Chạy Variant ---")
-    # variant_results = run_scorecard(
-    #     config=VARIANT_CONFIG,
-    #     test_questions=test_questions,
-    #     verbose=True,
-    # )
-    # variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
-    # (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
+    print("\n--- Chạy Variant ---")
+    variant_results = run_scorecard(
+        config=VARIANT_CONFIG,
+        test_questions=test_questions,
+        verbose=True,
+    )
+    variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
+    (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
 
     # --- A/B Comparison ---
-    # TODO Sprint 4: Uncomment sau khi có cả baseline và variant
-    # if baseline_results and variant_results:
-    #     compare_ab(
-    #         baseline_results,
-    #         variant_results,
-    #         output_csv="ab_comparison.csv"
-    #     )
+    if baseline_results and variant_results:
+        compare_ab(
+            baseline_results,
+            variant_results,
+            output_csv="ab_comparison.csv"
+        )
 
     print("\n\nViệc cần làm Sprint 4:")
     print("  1. Hoàn thành Sprint 2 + 3 trước")
