@@ -62,7 +62,7 @@ def get_embedding(text: str) -> List[float]:
 TOP_K_SEARCH = 10    # Số chunk lấy từ vector store trước rerank (search rộng)
 TOP_K_SELECT = 3     # Số chunk gửi vào prompt sau rerank/select (top-3 sweet spot)
 
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-1.5-flash")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash")
 
 
 # =============================================================================
@@ -328,7 +328,7 @@ def call_llm(prompt: str) -> str:
     
     # Danh sách các model Flash tiềm năng để thử nếu model chính lỗi
     # Thứ tự: từ model người dùng chọn -> các model Flash mới nhất
-    candidate_models = [LLM_MODEL, "gemini-2.0-flash", "gemini-3.0-flash-preview", "gemini-flash-latest"]
+    candidate_models = [LLM_MODEL, "gemini-3.0-flash-preview", "gemini-flash-latest"]
     
     last_exception = None
     for model_name in candidate_models:
