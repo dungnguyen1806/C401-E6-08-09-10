@@ -1,0 +1,102 @@
+# BÁO CÁO TỔNG KẾT NHÓM - RAG PIPELINE (LAB DAY 08)
+
+**Tên nhóm:** C401-E6
+
+**Danh sách thành viên:**
+| Role | Thành viên | Nhiệm vụ cốt lõi | Deliverables chịu trách nhiệm |
+|:---|:---|:---|:---|
+| **Tech Lead** | **Dũng, Quang** | Code chính, ghép nối các module (Pair programming). Setup môi trường, fix bug pipeline. | `index.py`, `rag_answer.py`, `eval.py` |
+| **Retrieval Owner** | **Tuấn, Hải** | Nghiên cứu file text để chia chunk, bóc tách metadata. Implement thuật toán Hybrid/Rerank. | Code logic Chunking và Tuning Variant |
+| **Eval Owner** | **Huy, Long** | Đọc data tạo test case chặn đầu. Chạy file đánh giá, chấm điểm Baseline vs Variant. | `test_questions.json`, `scorecard_*.md` |
+| **Doc Owner / Scrum Master** | **Thuận** | Ghi chép thiết kế, log tuning, viết file doc chuẩn chỉnh. Giục team viết báo cáo cá nhân. | `architecture.md`, `tuning-log.md` |
+
+---
+
+## 1. TỔNG QUAN BÀI TOÁN
+- **Vấn đề:** Trợ giúp nhân viên phòng CS và IT tra cứu nhanh chóng số liệu, quy trình, SLA, chính sách nội bộ từ các file tài liệu rải rác mà không cần đọc thủ công.
+- **Giải pháp:** Xây dựng hệ thống RAG (Retrieval-Augmented Generation) để tự động truy xuất tài liệu và tổng hợp câu trả lời có grounding, có citation, giảm hallucination khi trả lời các câu hỏi nghiệp vụ.
+- **Mục tiêu:** Tạo một trợ lý nội bộ có thể trả lời những câu hỏi liên quan đến policy, SOP, FAQ, SLA ticket và quy trình cấp quyền dựa trên tập tài liệu công ty.
+
+## 2. KIẾN TRÚC HỆ THỐNG
+Hệ thống được tổ chức thành 3 giai đoạn chính: `Indexing`, `Retrieval` và `Generation`. Tài liệu thô được tiền xử lý, tách chunk, gắn metadata và embed vào ChromaDB. Khi có câu hỏi, pipeline sẽ retrieve các chunk phù hợp nhất, build context có citation rồi đưa vào LLM để sinh câu trả lời ngắn gọn và bám sát chứng cứ.
+
+```mermaid
+graph TD
+    classDef database fill:#f9f,stroke:#333,stroke-width:2px,color:#000;
+    classDef process fill:#bbf,stroke:#333,stroke-width:1px,color:#000;
+    classDef input fill:#cfc,stroke:#333,stroke-width:1px,color:#000;
+    classDef llm fill:#fca,stroke:#333,stroke-width:2px,color:#000;
+
+    subgraph "Phase 1: Indexing Pipeline (Sprint 1)"
+        R1[Raw Documents <br> PDF, Markdown]:::input --> CH[Document Loader & Chunking <br> Size: 400, Overlap: 80]:::process
+        CH --> MT[Attach Metadata <br> source, section...]:::process
+        MT --> EM1[Embedding Model <br> MiniLM-L12-v2]:::process
+        EM1 -->|Lưu Vector & Text| VDB[(ChromaDB Vector Store)]:::database
+    end
+
+    subgraph "Phase 2 & 3: Retrieval & Generation (Sprint 2, 3)"
+        UQ[User Query]:::input --> EM2[Embedding Model]:::process
+        EM2 -.->|Search Vector| VDB
+        UQ -.->|Keyword Search <br>Nếu dùng Hybrid| VDB
+        VDB --> T10[Retrieve Top-10 Chunks]:::process
+
+        T10 --> RR{Có dùng Rerank?}
+        RR -->|Có| CE[Cross-Encoder Reranker]:::process
+        RR -->|Không| T3[Lấy Top-3 Chunks]:::process
+        CE -->|Tính lại điểm| T3
+
+        T3 --> CB[Build Context Block <br> kèm thêm Citation]:::process
+        CB --> PMT[Grounded Prompt]:::llm
+        UQ --> PMT
+        PMT --> LL[LLM Generation <br> Temperature = 0]:::llm
+        LL --> OUT[Grounded Answer <br> kèm trích dẫn nguồn]:::input
+    end
+```
+
+**Quyết định chunking**
+
+| Tham số | Giá trị | Lý do |
+|---------|---------|-------|
+| Chunk size | 400 tokens | Nhóm chọn 400 tokens để giữ trọn ngữ nghĩa của các đoạn policy/SLA vốn hay đi theo cụm điều kiện, ngoại lệ và quy trình. Mức này là điểm cân bằng giữa độ phủ nội dung và độ chính xác retrieval. |
+| Overlap | 80 tokens | Overlap 80 tokens giúp giảm mất mát thông tin ở ranh giới chunk, nhất là với danh sách bước và câu dài nhiều vế liên tiếp. |
+| Chunking strategy | Heading-based | Nhóm tách theo cấu trúc sẵn có của tài liệu, ưu tiên heading `=== ... ===`, riêng FAQ thì tách theo cặp Q/A để giữ đúng đơn vị hỏi đáp. |
+| Metadata fields | source, section, effective_date, department, access | Phục vụ filter, freshness, citation và giải thích nguồn retrieve. |
+
+## 3. QUÁ TRÌNH THỰC NGHIỆM VÀ TUNING (A/B TEST)
+- **Baseline ban đầu:** Nhóm sử dụng `dense retrieval` với `chunk_size = 400`, `overlap = 80`, `top_k_search = 10`, `top_k_select = 3`, không dùng rerank, model sinh câu trả lời là `Deepseek-chat`.
+- **Vấn đề phát sinh:** Baseline đạt điểm trung bình khá tốt, nhưng vẫn yếu ở một số câu hỏi dễ nhiễu số liệu hoặc trường hợp không có đáp án trực tiếp trong docs. Các câu `q05`, `q09`, `q10` là những điểm yếu rõ nhất, cho thấy model dễ bị nhiễu số, suy diễn thêm ngoài context, hoặc abstain chưa đủ chặt.
+- **Giả thuyết:** Dense retrieval có thể bỏ lỡ keyword/alias cũ và mã code cứng; bên cạnh đó, nếu context dài và nhiều con số, LLM có xu hướng chọn nhầm chi tiết và làm giảm faithfulness.
+- **Variant 1:** Nhóm chỉ đổi một biến duy nhất là `retrieval_mode`, từ `dense` sang `hybrid`, để kết hợp embedding similarity và BM25. Mục tiêu là bắt tốt hơn các keyword cứng, alias tài liệu và truy vấn có mã định danh.
+- **Kết quả quan sát:** Variant 1 cải thiện rõ nhất ở `q10`, khi Faithfulness tăng từ `1/5` lên `4/5` và các chỉ số còn lại giữ nguyên. Tuy nhiên, variant không ổn định trên toàn bộ tập câu hỏi: `q05`, `q06`, `q08` lại kém hơn baseline, còn `q09` chỉ là trade-off giữa relevance và completeness.
+
+## 4. KẾT QUẢ ĐÁNH GIÁ (SCORECARD)
+**Baseline**
+- Faithfulness: `4.0/5`
+- Relevance: `5.0/5`
+- Context Recall: `5.0/5`
+- Completeness: `4.6/5`
+
+**Variant 1**
+- Faithfulness: `4.2/5`
+- Relevance: `4.8/5`
+- Context Recall: `5.0/5`
+- Completeness: `4.5/5`
+
+**Tổng hợp**
+- Faithfulness tăng `+0.2`
+- Relevance giảm `-0.2`
+- Context Recall giữ nguyên
+- Completeness giảm `-0.1`
+
+**Kết luận đánh giá**
+Variant 1 chưa đủ thuyết phục để thay thế baseline làm cấu hình mặc định. Dù faithfulness trung bình có tăng nhẹ, các chỉ số còn lại không tốt hơn. Ở mức câu hỏi cụ thể, có `6/10` câu hòa, `3/10` câu baseline tốt hơn và chỉ `1/10` câu variant thắng rõ rệt. Điều này cho thấy `hybrid retrieval` có tiềm năng với nhóm câu hỏi chứa mã/alias, nhưng chưa đạt mức áp đảo hoàn toàn.
+
+## 5. ĐÚC KẾT VÀ BÀI HỌC (LESSON LEARNED)
+1. **Lỗi dễ gặp nhất trong pipeline này là gì?**  
+   LLM đưa ra câu trả lời sai (hallucination) do đoạn context truyền vào không chứa thông tin chính xác. Nguyên nhân sâu xa thường bắt nguồn từ retrieval, ví dụ dense search hụt các mốc mã số/keyword chuyên nghiệp, hoặc chunking cắt mất một đoạn ý nghĩa quan trọng.
+
+2. **Biến nào có tác động lớn nhất tới chất lượng?**  
+   Chiến lược retrieval và thiết kế system prompt là hai yếu tố tác động lớn nhất. Việc đổi sang hybrid retrieval giúp cân bằng độ phủ context, còn prompt grounded có citation giúp ép LLM bám sát chứng cứ và giảm trả lời ngoài tài liệu.
+
+3. **Nếu có thêm 1 giờ, nhóm sẽ thử gì tiếp theo?**  
+   Nhóm sẽ setup thêm một bộ Cross-Encoder Reranker để loại bỏ các chunk rác vô tình được BM25 kéo vào context. Bên cạnh đó, nhóm có thể bổ sung lọc metadata `effective_date` để tránh trường hợp model lấy nhầm tài liệu cũ hoặc version không còn hiệu lực.
