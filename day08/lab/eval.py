@@ -17,12 +17,17 @@ A/B Rule (từ slide):
   Đổi đồng thời chunking + hybrid + rerank + prompt = không biết biến nào có tác dụng.
 """
 
+import os
+import re
 import json
 import csv
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from dotenv import load_dotenv
 from rag_answer import rag_answer
+
+load_dotenv()
 
 # =============================================================================
 # CẤU HÌNH
@@ -50,6 +55,97 @@ VARIANT_CONFIG = {
     "label": "variant_hybrid_rerank",
 }
 
+def _call_judge_llm(prompt: str) -> Optional[str]:
+    """
+    Gọi LLM để chấm điểm (judge). Hỗ trợ OpenAI và Gemini.
+    Trả về text response hoặc None nếu không gọi được.
+
+    """
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+
+    try:
+        if provider == "openai":
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = client.chat.completions.create(
+                model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=300,
+            )
+            return response.choices[0].message.content
+
+        elif provider == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+            model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+            response = model.generate_content(prompt)
+            return response.text
+
+        else:
+            print(f"[Judge] Provider '{provider}' not supported. Set LLM_PROVIDER=openai or gemini.")
+            return None
+
+    except Exception as e:
+        print(f"[Judge] LLM call failed: {e}")
+        return None
+
+
+def _parse_judge_response(response_text: Optional[str]) -> Dict[str, Any]:
+    """
+    Parse JSON response từ LLM judge.
+    Xử lý các trường hợp: JSON thuần, JSON trong markdown code block, hoặc lỗi.
+    """
+    if not response_text:
+        return {"score": None, "notes": "LLM judge not available"}
+
+    # Thử parse trực tiếp
+    try:
+        result = json.loads(response_text)
+        score = int(result.get("score", 0))
+        score = max(1, min(5, score))  # Clamp 1-5
+        notes = result.get("reason", result.get("notes", result.get("missing_points", "")))
+        if isinstance(notes, list):
+            notes = "; ".join(notes)
+        return {"score": score, "notes": str(notes)}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Thử extract JSON từ markdown code block
+    json_match = re.search(r'```(?:json)?\s*({.*?})\s*```', response_text, re.DOTALL)
+    if json_match:
+        try:
+            result = json.loads(json_match.group(1))
+            score = int(result.get("score", 0))
+            score = max(1, min(5, score))
+            notes = result.get("reason", result.get("notes", ""))
+            if isinstance(notes, list):
+                notes = "; ".join(notes)
+            return {"score": score, "notes": str(notes)}
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Thử extract JSON từ bất kỳ đâu trong response
+    json_match = re.search(r'({[^{}]*"score"[^{}]*})', response_text, re.DOTALL)
+    if json_match:
+        try:
+            result = json.loads(json_match.group(1))
+            score = int(result.get("score", 0))
+            score = max(1, min(5, score))
+            notes = result.get("reason", result.get("notes", ""))
+            if isinstance(notes, list):
+                notes = "; ".join(notes)
+            return {"score": score, "notes": str(notes)}
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Fallback: thử tìm số điểm trong text
+    score_match = re.search(r'(\d)[/\s]*5', response_text)
+    if score_match:
+        return {"score": int(score_match.group(1)), "notes": response_text[:100]}
+
+    return {"score": None, "notes": f"Could not parse: {response_text[:100]}"}
+
 
 # =============================================================================
 # SCORING FUNCTIONS
@@ -71,29 +167,41 @@ def score_faithfulness(
       2: Nhiều thông tin không có trong retrieved chunks
       1: Câu trả lời không grounded, phần lớn là model bịa
 
-    TODO Sprint 4 — Có 2 cách chấm:
-
-    Cách 1 — Chấm thủ công (Manual, đơn giản):
-        Đọc answer và chunks_used, chấm điểm theo thang trên.
-        Ghi lý do ngắn gọn vào "notes".
-
-    Cách 2 — LLM-as-Judge (Tự động, nâng cao):
-        Gửi prompt cho LLM:
-            "Given these retrieved chunks: {chunks}
-             And this answer: {answer}
-             Rate the faithfulness on a scale of 1-5.
-             5 = completely grounded in the provided context.
-             1 = answer contains information not in the context.
-             Output JSON: {'score': <int>, 'reason': '<string>'}"
-
-    Trả về dict với: score (1-5) và notes (lý do)
+    Implemented by: nghlong3004 (Eval Owner) — LLM-as-Judge
     """
-    # TODO Sprint 4: Implement scoring
-    # Tạm thời trả về None (yêu cầu chấm thủ công)
-    return {
-        "score": None,
-        "notes": "TODO: Chấm thủ công hoặc implement LLM-as-Judge",
-    }
+    # Edge case: pipeline chưa chạy hoặc không có answer
+    if not answer or answer.startswith("PIPELINE_"):
+        return {"score": None, "notes": "No answer to evaluate"}
+
+    # Ghép context từ chunks
+    context_text = "\n\n".join([
+        f"[Chunk {i+1}] {c.get('metadata', {}).get('source', '?')}: {c.get('text', '')[:300]}"
+        for i, c in enumerate(chunks_used[:5])  # Max 5 chunks để tiết kiệm token
+    ])
+
+    if not context_text.strip():
+        return {"score": 1, "notes": "No context chunks — answer is ungrounded"}
+
+    prompt = f"""You are a strict evaluator. Rate the FAITHFULNESS of the answer.
+Faithfulness = Is every claim in the answer supported by the retrieved context?
+
+Scoring:
+  5 = Every fact in the answer is directly found in the context.
+  4 = Almost fully grounded, 1 minor detail uncertain.
+  3 = Mostly grounded, some info may come from model knowledge.
+  2 = Many claims not supported by context.
+  1 = Answer is mostly fabricated / not grounded.
+
+Retrieved Context:
+{context_text}
+
+Answer to evaluate:
+{answer}
+
+Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+
+    response = _call_judge_llm(prompt)
+    return _parse_judge_response(response)
 
 
 def score_answer_relevance(
@@ -111,12 +219,34 @@ def score_answer_relevance(
       2: Trả lời lạc đề một phần
       1: Không trả lời câu hỏi
 
-    TODO Sprint 4: Implement tương tự score_faithfulness
+    Implemented by: nghlong3004 (Eval Owner) — LLM-as-Judge
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_answer_relevance",
-    }
+    if not answer or answer.startswith("PIPELINE_"):
+        return {"score": None, "notes": "No answer to evaluate"}
+
+    prompt = f"""You are a strict evaluator. Rate the ANSWER RELEVANCE.
+Answer Relevance = Does the answer directly address the user's question?
+
+Scoring:
+  5 = Answer directly and fully addresses the question.
+  4 = Addresses the question but misses minor details.
+  3 = Related but doesn't hit the core point.
+  2 = Partially off-topic.
+  1 = Does not answer the question at all.
+
+Note: If the question asks about something NOT in the documents, and the answer correctly says
+"I don't have enough information" or similar abstain response, give score 5 (correct behavior).
+
+Question:
+{query}
+
+Answer:
+{answer}
+
+Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+
+    response = _call_judge_llm(prompt)
+    return _parse_judge_response(response)
 
 
 def score_context_recall(
@@ -191,17 +321,52 @@ def score_completeness(
       2: Thiếu nhiều thông tin quan trọng
       1: Thiếu phần lớn nội dung cốt lõi
 
-    TODO Sprint 4:
-    Option 1 — Chấm thủ công: So sánh answer vs expected_answer và chấm.
-    Option 2 — LLM-as-Judge:
-        "Compare the model answer with the expected answer.
-         Rate completeness 1-5. Are all key points covered?
-         Output: {'score': int, 'missing_points': [str]}"
+    Implemented by: nghlong3004 (Eval Owner) — LLM-as-Judge
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_completeness (so sánh với expected_answer)",
-    }
+    if not answer or answer.startswith("PIPELINE_"):
+        return {"score": None, "notes": "No answer to evaluate"}
+
+    if not expected_answer:
+        return {"score": None, "notes": "No expected answer to compare"}
+
+    prompt = f"""You are a strict evaluator. Rate the COMPLETENESS of the model answer
+by comparing it against the expected answer.
+
+Completeness = Does the model answer cover all key points from the expected answer?
+
+Scoring:
+  5 = All key points from expected answer are covered.
+  4 = Missing 1 minor detail.
+  3 = Missing some important information.
+  2 = Missing many important points.
+  1 = Missing most of the core content.
+
+Question:
+{query}
+
+Expected Answer (ground truth):
+{expected_answer}
+
+Model Answer (to evaluate):
+{answer}
+
+Output ONLY a JSON object: {{"score": <int 1-5>, "reason": "<brief explanation>", "missing_points": ["<point1>", ...]}}"""
+
+    response = _call_judge_llm(prompt)
+    result = _parse_judge_response(response)
+
+    # Extract missing_points nếu có
+    if response:
+        try:
+            parsed = json.loads(response)
+            if "missing_points" in parsed:
+                missing = parsed["missing_points"]
+                if isinstance(missing, list) and missing:
+                    result["notes"] += f" | Missing: {'; '.join(missing)}"
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return result
 
 
 # =============================================================================
