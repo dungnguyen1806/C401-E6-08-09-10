@@ -28,8 +28,9 @@ llm_model = Deepseek-chat
 | Completeness | 4.6/5 |
 
 **Câu hỏi yếu nhất (điểm thấp):**
-> TODO: Liệt kê 2-3 câu hỏi có điểm thấp nhất và lý do tại sao.
-> Ví dụ: "q07 (Approval Matrix) - context recall = 1/5 vì dense bỏ lỡ alias."
+> `q05` (Tài khoản bị khóa sau bao nhiêu lần đăng nhập sai?) - Faithfulness = `1/5`. Baseline nhiều khả năng retrieve đúng FAQ nhưng model trả lời sai con số do chunk chứa nhiều số gần nhau (`5 phút`, `5 lần`, `90 ngày`, `7 ngày`), nên bị nhiễu và không bám chặt vào evidence.
+> `q10` (Nếu cần hoàn tiền khẩn cấp cho khách hàng VIP, quy trình có khác không?) - Faithfulness = `1/5`. Tài liệu chỉ mô tả quy trình hoàn tiền chuẩn, không có nhánh riêng cho khách VIP; baseline có dấu hiệu suy diễn thêm ngoại lệ không tồn tại thay vì trả lời theo đúng phạm vi context.
+> `q09` (ERR-403-AUTH là lỗi gì và cách xử lý?) - Completeness = `3/5`, Faithfulness = `4/5`. Đây là câu hỏi không có đáp án trực tiếp trong docs, nên baseline chưa abstain đủ mạnh: có thể nêu được hướng chung nhưng vẫn thiếu câu trả lời chuẩn kiểu "không đủ dữ liệu" và dễ chen suy đoán ngoài tài liệu.
 
 **Giả thuyết nguyên nhân (Error Tree):**
 - [ ] Indexing: Chunking cắt giữa điều khoản
@@ -63,12 +64,12 @@ retrieval_mode = "hybrid"
 | Completeness | 4.6/5 | 4.5/5 | -0.1 |
 
 **Nhận xét:**
-> TODO: Variant 1 cải thiện ở câu nào? Tại sao?
-> Có câu nào kém hơn không? Tại sao?
+> Variant 1 cải thiện rõ nhất ở `q10`: Faithfulness tăng từ `1/5` lên `4/5` trong khi Relevance, Context Recall và Completeness vẫn giữ `5/5`. Điều này phù hợp với giả thuyết ban đầu rằng Hybrid retrieval bắt tốt hơn các mã/keyword cứng, nên câu trả lời bám sát evidence hơn.
+> Tuy nhiên, Variant 1 không cải thiện đồng đều trên toàn bộ tập câu hỏi. `q05` có Faithfulness tăng nhẹ (`1/5 -> 2/5`) nhưng Completeness giảm mạnh (`5/5 -> 3/5`), nên tổng thể vẫn kém Baseline. `q06` giảm Relevance (`5/5 -> 4/5`) và `q08` giảm Faithfulness khá rõ (`4/5 -> 2/5`). `q09` có trade-off khi Completeness tăng (`3/5 -> 4/5`) nhưng Relevance giảm (`5/5 -> 4/5`), nên xem như hòa.
 
 **Kết luận:**
-> TODO: Variant 1 có tốt hơn baseline không?
-> Bằng chứng là gì? (điểm số, câu hỏi cụ thể)
+> Chưa có đủ bằng chứng để kết luận Variant 1 tốt hơn Baseline, nên chưa nên thay thế cấu hình mặc định ở thời điểm này. Dù Faithfulness trung bình tăng từ `4.0` lên `4.2` (`+0.2`), các chỉ số còn lại lại không tốt hơn: Relevance giảm từ `5.0` xuống `4.8`, Completeness giảm từ `4.6` xuống `4.5`, còn Context Recall giữ nguyên `5.0`.
+> Ở mức câu hỏi cụ thể, có `6/10` câu hòa (`q01`, `q02`, `q03`, `q04`, `q07`, `q09`), `3/10` câu Baseline tốt hơn (`q05`, `q06`, `q08`) và chỉ `1/10` câu Variant tốt hơn rõ rệt (`q10`). Kết luận hợp lý là Hybrid retrieval có tiềm năng với nhóm câu hỏi chứa mã/alias, nhưng cần kết hợp thêm rerank hoặc tinh chỉnh `top_k`/metadata trước khi rollout rộng hơn.
 
 ---
 
