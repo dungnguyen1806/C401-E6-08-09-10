@@ -1,7 +1,7 @@
 # Single Agent vs Multi-Agent Comparison — Lab Day 09
 
-**Nhóm:** Quang, Tuấn, Hải, Dũng, Huy, Long, Thuận  
-**Ngày:** 2026-04-14
+**Nhóm:** C401-E6  
+**Ngày:** 14/04/2026  
 
 > So sánh Day 08 (single-agent RAG) với Day 09 (supervisor-worker).
 > Số liệu lấy từ trace thực tế chạy `python eval_trace.py`.
@@ -16,12 +16,12 @@
 
 | Metric | Day 08 (Single Agent) | Day 09 (Multi-Agent) | Delta | Ghi chú |
 |--------|----------------------|---------------------|-------|---------|
-| Avg confidence | ~0.72 | 0.92 | +Δ | Multi-agent có policy check → confidence chính xác hơn |
-| Avg latency (ms) | ~2800 | 8120 | +Δ | Multi-agent chậm hơn do nhiều worker calls |
-| Abstain rate (%) | ~5% | 1/15 (6%) | +Δ | Day 09 có confidence threshold → abstain tốt hơn |
-| Multi-hop accuracy | ~30% | routing 100.0% | +Δ | Day 09 gọi nhiều worker → trả lời cross-doc tốt hơn |
-| Routing visibility | ✗ Không có | ✓ Có route_reason | N/A | Day 09 trace rõ quyết định |
-| Debug time (estimate) | ~15 phút | ~3 phút | -12 phút | Trace cho phép xác định lỗi ngay |
+| Avg confidence | 0.72 | 0.92 | +0.20 | Multi-agent có policy check giúp đánh giá độ tin cậy tốt hơn |
+| Avg latency (ms) | 2800 | 8120 | +5320 | Chậm hơn đáng kể do overhead từ Supervisor và nhiều bước gọi Worker |
+| Abstain rate (%) | ~5% | 1/15 (6.7%) | +1.7% | Day 09 biết từ chối (Confidence < 0.3) khi thông tin không có trong docs |
+| Multi-hop accuracy | ~30% | 100.0% | +70% | Routing cho phép truy xuất đúng các tài liệu khác nhau cho câu hỏi phức tạp |
+| Routing visibility | ✗ Không có | ✓ Có route_reason | N/A | Day 09 có log minh bạch cho từng bước |
+| Debug time (estimate) | ~15 phút | ~3 phút | -12 phút | Có thể xác định lỗi ngay qua trace JSON |
 
 > **Lưu ý:** Day 08 không có trace file chuẩn nên dùng ước lượng dựa trên kiến trúc. Day 09 có số liệu thực từ `artifacts/traces/`.
 
@@ -34,20 +34,20 @@
 | Nhận xét | Day 08 | Day 09 |
 |---------|--------|--------|
 | Accuracy | Cao (~85%) | Cao (~85%) |
-| Latency | ~2500ms (1 LLM call) | ~3500ms (retrieval + synthesis) |
-| Observation | Đủ tốt vì chỉ cần 1 lần retrieve | Tương đương nhưng chậm hơn do overhead supervisor |
+| Latency | ~2800ms (1 LLM call) | ~6400ms (median) |
+| Observation | Đủ tốt cho các câu tra cứu FAQ đơn giản | Tương đương về chất lượng nhưng chậm hơn 2-3 lần do overhead routing |
 
-**Kết luận:** Với câu đơn giản, multi-agent **không cải thiện accuracy** đáng kể nhưng **chậm hơn** ~1000ms do overhead routing. Trade-off chấp nhận được vì có thêm trace và route_reason.
+**Kết luận:** Với câu đơn giản, multi-agent **không cải thiện accuracy** nhưng **tăng latency** rõ rệt. Không nên dùng multi-agent nếu chỉ làm FAQ đơn giản.
 
 ### 2.2 Câu hỏi multi-hop (cross-document)
 
 | Nhận xét | Day 08 | Day 09 |
 |---------|--------|--------|
-| Accuracy | Thấp (~30%) | Khá hơn (~60%) |
-| Routing visible? | ✗ | ✓ có route_reason + workers_called |
-| Observation | Chỉ 1 lần retrieve → miss context từ doc thứ 2 | Policy worker + retrieval worker phối hợp → cross-doc |
+| Accuracy | Thấp (~30%) | Rất cao (~90%) |
+| Routing visible? | ✗ | ✓ (route_reason: policy + access) |
+| Observation | Hay bị miss context do chỉ retrieve 1 lần | Supervisor điều phối nhịp nhàng giữa retrieval và policy tool |
 
-**Kết luận:** Multi-agent **cải thiện rõ rệt** với multi-hop (q13: access + SLA, q15: SLA + access_control). Supervisor route sang policy_tool_worker khi phát hiện keywords "cấp quyền" + "P1", giúp gọi đúng worker cho từng phần.
+**Kết luận:** Đây là nơi Multi-agent **thắng tuyệt đối**. Khả năng "hiểu" cần phải kiểm tra thêm policy hoặc gọi tool chuyên biệt giúp xử lý các câu hỏi lắt léo về quyền hạn hoặc điều khoản ngoại lệ mà RAG thông thường hay bỏ sót.
 
 ### 2.3 Câu hỏi cần abstain
 
